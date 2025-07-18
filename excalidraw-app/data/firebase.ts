@@ -1,4 +1,3 @@
-import { reconcileElements } from "@excalidraw/excalidraw";
 import { MIME_TYPES } from "@excalidraw/common";
 import { decompressData } from "@excalidraw/excalidraw/data/encode";
 import {
@@ -8,21 +7,10 @@ import {
 import { restoreElements } from "@excalidraw/excalidraw/data/restore";
 import { getSceneVersion } from "@excalidraw/element";
 import { initializeApp } from "firebase/app";
-import {
-  getFirestore,
-  doc,
-  getDoc,
-  runTransaction,
-  Bytes,
-} from "firebase/firestore";
+import { Bytes } from "firebase/firestore";
 import { getStorage, ref, uploadBytes } from "firebase/storage";
 
-import type { RemoteExcalidrawElement } from "@excalidraw/excalidraw/data/reconcile";
-import type {
-  ExcalidrawElement,
-  FileId,
-  OrderedExcalidrawElement,
-} from "@excalidraw/element/types";
+import type { ExcalidrawElement, FileId } from "@excalidraw/element/types";
 import type {
   AppState,
   BinaryFileData,
@@ -45,16 +33,12 @@ let FIREBASE_CONFIG: Record<string, any>;
 try {
   FIREBASE_CONFIG = JSON.parse(import.meta.env.VITE_APP_FIREBASE_CONFIG);
 } catch (error: any) {
-  console.warn(
-    `Error JSON parsing firebase config. Supplied value: ${
-      import.meta.env.VITE_APP_FIREBASE_CONFIG
-    }`,
-  );
+  const config = import.meta.env.VITE_APP_FIREBASE_CONFIG;
+  console.warn(`Error JSON parsing firebase config. Supplied value: ${config}`);
   FIREBASE_CONFIG = {};
 }
 
 let firebaseApp: ReturnType<typeof initializeApp> | null = null;
-let firestore: ReturnType<typeof getFirestore> | null = null;
 let firebaseStorage: ReturnType<typeof getStorage> | null = null;
 
 const _initializeFirebase = () => {
@@ -62,13 +46,6 @@ const _initializeFirebase = () => {
     firebaseApp = initializeApp(FIREBASE_CONFIG);
   }
   return firebaseApp;
-};
-
-const _getFirestore = () => {
-  if (!firestore) {
-    firestore = getFirestore(_initializeFirebase());
-  }
-  return firestore;
 };
 
 const _getStorage = () => {
@@ -200,50 +177,54 @@ export const saveToFirebase = async (
     return null;
   }
 
-  const firestore = _getFirestore();
-  const docRef = doc(firestore, "scenes", roomId);
+  try {
+    // Use storage backend instead of Firebase
+    const BACKEND_V2_ROOMS_URL =
+      import.meta.env.VITE_APP_BACKEND_V2_GET_URL?.replace(
+        "/api/v2/",
+        "/api/v2/rooms/",
+      );
 
-  const storedScene = await runTransaction(firestore, async (transaction) => {
-    const snapshot = await transaction.get(docRef);
-
-    if (!snapshot.exists()) {
-      const storedScene = await createFirebaseSceneDocument(elements, roomKey);
-
-      transaction.set(docRef, storedScene);
-
-      return storedScene;
+    if (!BACKEND_V2_ROOMS_URL) {
+      console.warn("No storage backend configured, skipping room save");
+      return null;
     }
 
-    const prevStoredScene = snapshot.data() as FirebaseStoredScene;
-    const prevStoredElements = getSyncableElements(
-      restoreElements(await decryptElements(prevStoredScene, roomKey), null),
+    // Create the scene document with encryption
+    const storedScene = await createFirebaseSceneDocument(elements, roomKey);
+
+    // Convert to binary data for storage backend
+    const sceneData = JSON.stringify({
+      sceneVersion: storedScene.sceneVersion,
+      ciphertext: Array.from(storedScene.ciphertext.toUint8Array()),
+      iv: Array.from(storedScene.iv.toUint8Array()),
+    });
+
+    // Save to storage backend using PUT method with binary data
+    const response = await fetch(`${BACKEND_V2_ROOMS_URL}${roomId}`, {
+      method: "PUT",
+      headers: {
+        "Content-Type": "application/octet-stream",
+      },
+      body: sceneData,
+    });
+
+    if (!response.ok) {
+      throw new Error(`Failed to save room: ${response.status}`);
+    }
+
+    // Return the stored elements for consistency
+    const storedElements = getSyncableElements(
+      restoreElements(await decryptElements(storedScene, roomKey), null),
     );
-    const reconciledElements = getSyncableElements(
-      reconcileElements(
-        elements,
-        prevStoredElements as OrderedExcalidrawElement[] as RemoteExcalidrawElement[],
-        appState,
-      ),
-    );
 
-    const storedScene = await createFirebaseSceneDocument(
-      reconciledElements,
-      roomKey,
-    );
+    FirebaseSceneVersionCache.set(socket, storedElements);
 
-    transaction.update(docRef, storedScene);
-
-    // Return the stored elements as the in memory `reconciledElements` could have mutated in the meantime
-    return storedScene;
-  });
-
-  const storedElements = getSyncableElements(
-    restoreElements(await decryptElements(storedScene, roomKey), null),
-  );
-
-  FirebaseSceneVersionCache.set(socket, storedElements);
-
-  return storedElements;
+    return storedElements;
+  } catch (error) {
+    console.error("Error saving to storage backend:", error);
+    throw error;
+  }
 };
 
 export const loadFromFirebase = async (
@@ -251,22 +232,52 @@ export const loadFromFirebase = async (
   roomKey: string,
   socket: Socket | null,
 ): Promise<readonly SyncableExcalidrawElement[] | null> => {
-  const firestore = _getFirestore();
-  const docRef = doc(firestore, "scenes", roomId);
-  const docSnap = await getDoc(docRef);
-  if (!docSnap.exists()) {
+  try {
+    // Use storage backend instead of Firebase
+    const BACKEND_V2_ROOMS_URL =
+      import.meta.env.VITE_APP_BACKEND_V2_GET_URL?.replace(
+        "/api/v2/",
+        "/api/v2/rooms/",
+      );
+
+    if (!BACKEND_V2_ROOMS_URL) {
+      console.warn("No storage backend configured, skipping room load");
+      return null;
+    }
+
+    const response = await fetch(`${BACKEND_V2_ROOMS_URL}${roomId}`);
+
+    if (response.status === 404) {
+      return null; // Room doesn't exist
+    }
+
+    if (!response.ok) {
+      throw new Error(`Failed to load room: ${response.status}`);
+    }
+
+    const sceneDataText = await response.text();
+    const sceneData = JSON.parse(sceneDataText);
+
+    // Reconstruct the Firebase-style scene object
+    const storedScene = {
+      sceneVersion: sceneData.sceneVersion,
+      ciphertext: Bytes.fromUint8Array(new Uint8Array(sceneData.ciphertext)),
+      iv: Bytes.fromUint8Array(new Uint8Array(sceneData.iv)),
+    } as FirebaseStoredScene;
+
+    const elements = getSyncableElements(
+      restoreElements(await decryptElements(storedScene, roomKey), null),
+    );
+
+    if (socket) {
+      FirebaseSceneVersionCache.set(socket, elements);
+    }
+
+    return elements;
+  } catch (error) {
+    console.error("Error loading from storage backend:", error);
     return null;
   }
-  const storedScene = docSnap.data() as FirebaseStoredScene;
-  const elements = getSyncableElements(
-    restoreElements(await decryptElements(storedScene, roomKey), null),
-  );
-
-  if (socket) {
-    FirebaseSceneVersionCache.set(socket, elements);
-  }
-
-  return elements;
 };
 
 export const loadFilesFromFirebase = async (
@@ -277,12 +288,14 @@ export const loadFilesFromFirebase = async (
   const loadedFiles: BinaryFileData[] = [];
   const erroredFiles = new Map<FileId, true>();
 
+  const bucket = FIREBASE_CONFIG.storageBucket;
+
   await Promise.all(
     [...new Set(filesIds)].map(async (id) => {
       try {
-        const url = `https://firebasestorage.googleapis.com/v0/b/${
-          FIREBASE_CONFIG.storageBucket
-        }/o/${encodeURIComponent(prefix.replace(/^\//, ""))}%2F${id}`;
+        const url = `https://firebasestorage.googleapis.com/v0/b/${bucket}/o/${encodeURIComponent(
+          prefix.replace(/^\//, ""),
+        )}%2F${id}`;
         const response = await fetch(`${url}?alt=media`);
         if (response.status < 400) {
           const arrayBuffer = await response.arrayBuffer();
