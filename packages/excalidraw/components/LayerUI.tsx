@@ -1,3 +1,4 @@
+/* eslint-disable prettier/prettier */
 import clsx from "clsx";
 import React from "react";
 
@@ -6,7 +7,7 @@ import {
   DEFAULT_SIDEBAR,
   TOOL_TYPE,
   arrayToMap,
-  capitalizeString,
+  // capitalizeString,
   isShallowEqual,
 } from "@excalidraw/common";
 
@@ -403,7 +404,7 @@ const LayerUI = ({
           tunneled away. We only render tunneled components that actually
         have defaults when host do not render anything. */}
       <DefaultMainMenu UIOptions={UIOptions} />
-      <DefaultSidebar.Trigger
+      {/* <DefaultSidebar.Trigger
         __fallback
         icon={LibraryIcon}
         title={capitalizeString(t("toolBar.library"))}
@@ -419,7 +420,7 @@ const LayerUI = ({
         tab={DEFAULT_SIDEBAR.defaultTab}
       >
         {t("toolBar.library")}
-      </DefaultSidebar.Trigger>
+      </DefaultSidebar.Trigger> */}
       <DefaultOverwriteConfirmDialog />
       {appState.openDialog?.name === "ttd" && <TTDDialog __fallback />}
       {/* ------------------------------------------------------------------ */}
@@ -452,8 +453,8 @@ const LayerUI = ({
                       ? "strokeColor"
                       : "backgroundColor"
                     : colorPickerType === "elementBackground"
-                    ? "backgroundColor"
-                    : "strokeColor"]: color,
+                      ? "backgroundColor"
+                      : "strokeColor"]: color,
                 });
                 ShapeCache.delete(element);
               }
@@ -535,8 +536,8 @@ const LayerUI = ({
             className="layer-ui__wrapper"
             style={
               appState.openSidebar &&
-              isSidebarDocked &&
-              device.editor.canFitSidebar
+                isSidebarDocked &&
+                device.editor.canFitSidebar
                 ? { width: `calc(100% - var(--right-sidebar-width))` }
                 : {}
             }
