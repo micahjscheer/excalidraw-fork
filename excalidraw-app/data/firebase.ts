@@ -6,9 +6,7 @@ import {
 } from "@excalidraw/excalidraw/data/encryption";
 import { restoreElements } from "@excalidraw/excalidraw/data/restore";
 import { getSceneVersion } from "@excalidraw/element";
-import { initializeApp } from "firebase/app";
 import { Bytes } from "firebase/firestore";
-import { getStorage, ref, uploadBytes } from "firebase/storage";
 
 import type { ExcalidrawElement, FileId } from "@excalidraw/element/types";
 import type {
@@ -18,47 +16,16 @@ import type {
   DataURL,
 } from "@excalidraw/excalidraw/types";
 
-import { FILE_CACHE_MAX_AGE_SEC } from "../app_constants";
-
 import { getSyncableElements } from ".";
 
 import type { SyncableExcalidrawElement } from ".";
 import type Portal from "../collab/Portal";
 import type { Socket } from "socket.io-client";
 
-// private
-// -----------------------------------------------------------------------------
-
-let FIREBASE_CONFIG: Record<string, any>;
-try {
-  FIREBASE_CONFIG = JSON.parse(import.meta.env.VITE_APP_FIREBASE_CONFIG);
-} catch (error: any) {
-  const config = import.meta.env.VITE_APP_FIREBASE_CONFIG;
-  console.warn(`Error JSON parsing firebase config. Supplied value: ${config}`);
-  FIREBASE_CONFIG = {};
-}
-
-let firebaseApp: ReturnType<typeof initializeApp> | null = null;
-let firebaseStorage: ReturnType<typeof getStorage> | null = null;
-
-const _initializeFirebase = () => {
-  if (!firebaseApp) {
-    firebaseApp = initializeApp(FIREBASE_CONFIG);
-  }
-  return firebaseApp;
-};
-
-const _getStorage = () => {
-  if (!firebaseStorage) {
-    firebaseStorage = getStorage(_initializeFirebase());
-  }
-  return firebaseStorage;
-};
-
 // -----------------------------------------------------------------------------
 
 export const loadFirebaseStorage = async () => {
-  return _getStorage();
+  return {};
 };
 
 type FirebaseStoredScene = {
@@ -126,19 +93,39 @@ export const saveFilesToFirebase = async ({
   prefix: string;
   files: { id: FileId; buffer: Uint8Array }[];
 }) => {
-  const storage = await loadFirebaseStorage();
+  // Use storage backend instead of Firebase Storage
+  const BACKEND_V2_FILES_URL =
+    import.meta.env.VITE_APP_BACKEND_V2_GET_URL?.replace(
+      "/api/v2/",
+      "/api/v2/files/",
+    );
 
   const erroredFiles: FileId[] = [];
   const savedFiles: FileId[] = [];
 
+  if (!BACKEND_V2_FILES_URL) {
+    console.warn("No storage backend configured, skipping file save");
+    // Mark all files as errored since we can't save them
+    files.forEach(({ id }) => erroredFiles.push(id));
+    return { savedFiles, erroredFiles };
+  }
+
   await Promise.all(
     files.map(async ({ id, buffer }) => {
       try {
-        const storageRef = ref(storage, `${prefix}/${id}`);
-        await uploadBytes(storageRef, buffer, {
-          cacheControl: `public, max-age=${FILE_CACHE_MAX_AGE_SEC}`,
+        const response = await fetch(`${BACKEND_V2_FILES_URL}${id}`, {
+          method: "PUT",
+          headers: {
+            "Content-Type": "application/octet-stream",
+          },
+          body: buffer,
         });
-        savedFiles.push(id);
+
+        if (response.ok) {
+          savedFiles.push(id);
+        } else {
+          erroredFiles.push(id);
+        }
       } catch (error: any) {
         erroredFiles.push(id);
       }
@@ -288,15 +275,23 @@ export const loadFilesFromFirebase = async (
   const loadedFiles: BinaryFileData[] = [];
   const erroredFiles = new Map<FileId, true>();
 
-  const bucket = FIREBASE_CONFIG.storageBucket;
+  // Use storage backend instead of Firebase Storage
+  const BACKEND_V2_FILES_URL =
+    import.meta.env.VITE_APP_BACKEND_V2_GET_URL?.replace(
+      "/api/v2/",
+      "/api/v2/files/",
+    );
+
+  if (!BACKEND_V2_FILES_URL) {
+    console.warn("No storage backend configured, skipping file load");
+    // Return empty results but don't error
+    return { loadedFiles, erroredFiles };
+  }
 
   await Promise.all(
     [...new Set(filesIds)].map(async (id) => {
       try {
-        const url = `https://firebasestorage.googleapis.com/v0/b/${bucket}/o/${encodeURIComponent(
-          prefix.replace(/^\//, ""),
-        )}%2F${id}`;
-        const response = await fetch(`${url}?alt=media`);
+        const response = await fetch(`${BACKEND_V2_FILES_URL}${id}`);
         if (response.status < 400) {
           const arrayBuffer = await response.arrayBuffer();
 
