@@ -1,0 +1,27 @@
+# --- Builder stage ----------------------------------------------------------
+    FROM node:16-alpine AS builder
+    WORKDIR /app
+    
+    # Install dev+prod dependencies and build TS
+    COPY package*.json ./
+    RUN npm install
+    COPY . .
+    RUN npm run build
+    
+    # --- Runtime stage ----------------------------------------------------------
+    FROM node:16-alpine
+    WORKDIR /app
+    
+    # Bring in package manifests so npm can locate the start script
+    COPY --from=builder /app/package*.json ./
+    
+    # Bring in only production deps and compiled output
+    COPY --from=builder /app/node_modules ./node_modules
+    COPY --from=builder /app/dist       ./dist
+    
+    # Drop to non-root user
+    USER node
+    
+    EXPOSE 8080
+    
+    ENTRYPOINT ["npm", "run", "start:prod"]

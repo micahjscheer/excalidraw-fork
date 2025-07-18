@@ -1,0 +1,18 @@
+# ignore everything by default
+*
+
+# keep package manifests so we can install deps
+!package.json
+!package-lock.json
+
+# keep your Nest build config
+!nest-cli.json
+!tsconfig.json
+!tsconfig.build.json
+
+# keep source code
+!src/**
+
+# ignore node_modules and any pre-existing dist output
+node_modules
+dist

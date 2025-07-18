@@ -1,0 +1,65 @@
+import {
+  Controller,
+  Get,
+  Logger,
+  InternalServerErrorException,
+} from '@nestjs/common';
+import { createClient } from 'redis';
+import { StorageNamespace } from 'src/storage/storage.service';
+
+@Controller('scenes')
+export class LoadController {
+  private readonly logger = new Logger(LoadController.name);
+
+  // Initialize Redis client once
+  private client = createClient({ url: process.env.STORAGE_URI });
+
+  constructor() {
+    this.client.on('error', (err) => {
+      this.logger.error('Redis client error', err);
+    });
+    this.client.connect().catch((err) => {
+      this.logger.error('Failed to connect Redis client', err);
+    });
+  }
+
+  @Get()
+  async listScenes() {
+    try {
+      const prefix = `${StorageNamespace.SCENES}:`;
+
+      // 1) list all keys
+      const keys = await this.client.keys(`${prefix}*`);
+      this.logger.debug(`Found ${keys.length} scene keys`);
+
+      // 2) pipeline a GET for each key
+      const pipeline = this.client.multi();
+      for (const k of keys) {
+        pipeline.get(k);
+      }
+      // pipeline.exec() on redis v4 returns an array of reply values
+      const raws = (await pipeline.exec()) as (string | null)[];
+
+      // 3) build summaries
+      const scenes = keys
+        .map((fullKey, idx) => {
+          const raw = raws[idx];
+          if (!raw) return null;
+          try {
+            const payload = JSON.parse(raw);
+            const id = fullKey.slice(prefix.length);
+            return { id, created: payload.created, updated: payload.updated };
+          } catch {
+            this.logger.warn(`Skipping invalid JSON at ${fullKey}`);
+            return null;
+          }
+        })
+        .filter((s) => s !== null);
+
+      return scenes;
+    } catch (err) {
+      this.logger.error('Error listing scenes', err as any);
+      throw new InternalServerErrorException('Failed to list scenes');
+    }
+  }
+}
