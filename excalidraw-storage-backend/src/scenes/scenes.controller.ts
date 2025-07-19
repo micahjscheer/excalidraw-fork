@@ -20,7 +20,7 @@ export class ScenesController {
   private readonly logger = new Logger(ScenesController.name);
   namespace = StorageNamespace.SCENES;
 
-  constructor(private storageService: StorageService) {}
+  constructor(private storageService: StorageService) { }
   @Get(':id')
   @Header('content-type', 'application/octet-stream')
   async findOne(@Param() params, @Res() res: Response): Promise<void> {
@@ -32,7 +32,16 @@ export class ScenesController {
     }
 
     const stream = new Readable();
-    stream.push(data);
+
+    // Handle both Buffer and Object data
+    if (Buffer.isBuffer(data)) {
+      stream.push(data);
+    } else {
+      // Convert object to JSON string then to Buffer
+      const jsonString = typeof data === 'string' ? data : JSON.stringify(data);
+      stream.push(Buffer.from(jsonString, 'utf-8'));
+    }
+
     stream.push(null);
     stream.pipe(res);
   }
